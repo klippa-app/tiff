@@ -204,7 +204,13 @@ func readIFDEntryData(r io.ReadSeeker, entry *IFDEntry) (data []byte, err error)
 		return
 	}
 	data = make([]byte, valSize)
-	if _, err = r.Read(data); err != nil {
+	var n int
+	if n, err = r.Read(data); err != nil {
+		// Set err to nil when we reached the end of the file, but we did read
+		// all the requested data.
+		if n == valSize && err == io.EOF {
+			err = nil
+		}
 		return
 	}
 	return
@@ -228,7 +234,13 @@ func readIFDEntry8Data(r io.ReadSeeker, entry *IFDEntry) (data []byte, err error
 		return
 	}
 	data = make([]byte, valSize)
-	if _, err = r.Read(data); err != nil {
+	var n int
+	if n, err = r.Read(data); err != nil {
+		// Set err to nil when we reached the end of the file, but we did read
+		// all the requested data.
+		if n == valSize && err == io.EOF {
+			err = nil
+		}
 		return
 	}
 	return
