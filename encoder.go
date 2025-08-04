@@ -440,16 +440,16 @@ func EncodeAll(w EncoderWriter, images [][]image.Image, opt [][]*Options) error 
 				return err
 			}
 
+			// If compression is used, we only know the binary length after
+			// compression.
+			imageLen = buf.Len()
+			currentOffset += imageLen
+
 			// Write the compressed image to the writer.
 			_, err = buf.WriteTo(w)
 			if err != nil {
 				return err
 			}
-
-			// If compression is used, we only know the binary length after
-			// compression.
-			imageLen = buf.Len()
-			currentOffset += imageLen
 		}
 
 		ifd := []ifdEntry{
