@@ -319,7 +319,7 @@ func EncodeAll(w EncoderWriter, images [][]image.Image, opt [][]*Options) error 
 		}
 
 		if len(subImages) > 1 {
-			return errors.New("encoding currently does not support subimages")
+			return errors.New("encoding currently does not support multiple subimages")
 		}
 
 		// Always use the first subimage for now.
