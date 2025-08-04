@@ -7,7 +7,6 @@ package tiff
 import (
 	"bytes"
 	"image"
-	"io/ioutil"
 	"os"
 	"testing"
 )
@@ -60,7 +59,7 @@ func TestRoundtrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out := new(bytes.Buffer)
+		out := NewWriteAtBuffer([]byte{})
 		err = Encode(out, img, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -81,7 +80,7 @@ func TestRoundtrip2(t *testing.T) {
 	for i := range m0.Pix {
 		m0.Pix[i] = byte(i)
 	}
-	out := new(bytes.Buffer)
+	out := NewWriteAtBuffer([]byte{})
 	if err := Encode(out, m0, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +100,8 @@ func benchmarkEncode(b *testing.B, name string, pixelSize int) {
 	b.SetBytes(int64(s.X * s.Y * pixelSize))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		Encode(ioutil.Discard, img, nil)
+		out := NewWriteAtBuffer([]byte{})
+		Encode(out, img, nil)
 	}
 }
 

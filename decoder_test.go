@@ -197,12 +197,16 @@ func TestZeroSizedImages(t *testing.T) {
 	}
 	for _, r := range testsizes {
 		img := image.NewRGBA(image.Rect(0, 0, r.w, r.h))
-		var buf bytes.Buffer
-		if err := Encode(&buf, img, nil); err != nil {
+		buf := []byte{}
+		out := NewWriteAtBuffer(buf)
+
+		if err := Encode(out, img, nil); err != nil {
 			t.Errorf("encode w=%d h=%d: %v", r.w, r.h, err)
 			continue
 		}
-		if _, err := Decode(&buf); err != nil {
+
+		readBuffer := bytes.NewBuffer(out.Bytes())
+		if _, err := Decode(readBuffer); err != nil {
 			t.Errorf("decode w=%d h=%d: %v", r.w, r.h, err)
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"encoding/binary"
+	"errors"
 	"image"
 	"io"
 	"sort"
@@ -220,7 +221,7 @@ func writePix(w io.Writer, pix []byte, nrows, length, stride int) error {
 	return nil
 }
 
-func writeIFD(w io.Writer, ifdOffset int, d []ifdEntry) error {
+func writeIFD(w EncoderWriter, ifdOffset int, d []ifdEntry) (int, int, error) {
 	const ifdLen = 12
 
 	var buf [ifdLen]byte
@@ -235,8 +236,12 @@ func writeIFD(w io.Writer, ifdOffset int, d []ifdEntry) error {
 
 	// Write the number of entries in this IFD.
 	if err := binary.Write(w, enc, uint16(len(d))); err != nil {
-		return err
+		return 0, 0, err
 	}
+
+	// Number of entries (uint16) length in bytes.
+	writtenBytes := 2
+
 	for _, ent := range d {
 		enc.PutUint16(buf[0:2], uint16(ent.tag))
 		enc.PutUint16(buf[2:4], uint16(ent.datatype))
@@ -262,166 +267,241 @@ func writeIFD(w io.Writer, ifdOffset int, d []ifdEntry) error {
 			enc.PutUint32(buf[8:12], uint32(pstart+o))
 			o += datalen
 		}
+
+		// Length of buffer per ifd entry.
+		writtenBytes += len(buf[:])
+
 		if _, err := w.Write(buf[:]); err != nil {
-			return err
+			return 0, 0, err
 		}
 	}
+
 	// The IFD ends with the offset of the next IFD in the file,
 	// or zero if it is the last one (page 14).
+	// Note, this value is overwritten in the encoder.
+	if err := binary.Write(w, enc, uint32(0)); err != nil {
+		return 0, 0, err
+	}
+
+	_, err := w.Write(parea[:o])
+
+	// Offset position of next idf position:
+	// current offset + entries length + entries buffer length
+	// New image offset:
+	// current offset + entries length + entries buffer length + ifd position length + parea[:o] length
+	return ifdOffset + writtenBytes, ifdOffset + writtenBytes + 4 + len(parea[:o]), err
+}
+
+type EncoderWriter interface {
+	io.WriterAt
+	io.Writer
+}
+
+func EncodeAll(w EncoderWriter, images [][]image.Image, opt [][]*Options) error {
+	_, err := io.WriteString(w, ClassicTiffLittleEnding)
+	if err != nil {
+		return err
+	}
+
+	// Write first IDF offset placeholder.
 	if err := binary.Write(w, enc, uint32(0)); err != nil {
 		return err
 	}
-	_, err := w.Write(parea[:o])
-	return err
-}
 
-func EncodeAll(w io.Writer, m [][]image.Image, opt [][]*Options) error {
+	// 4 is the header length, next 4 is the IDF offset length.
+	idfPlaceholderOffset := 4
+	currentOffset := idfPlaceholderOffset + 4
+
+	for i := range images {
+		subImages := images[i]
+		if len(subImages) == 0 {
+			continue
+		}
+
+		if len(subImages) > 1 {
+			return errors.New("encoding currently does not support subimages")
+		}
+
+		// Always use the first subimage for now.
+		m := subImages[0]
+		var o *Options
+		if opt != nil && len(opt) >= (i+1) && len(opt[i]) >= 1 {
+			o = opt[i][0]
+		}
+
+		d := m.Bounds().Size()
+
+		compression := TagValue_CompressionType_None
+		predictor := false
+		if o != nil {
+			newCompression, ok := o.TagGetter().GetCompression()
+			if ok {
+				compression = newCompression
+
+				// The predictor field is only used with LZW. See page 64 of the spec.
+				newPredictor, ok := o.TagGetter().GetPredictor()
+				if ok && newPredictor == TagValue_PredictorType_Horizontal && newCompression == TagValue_CompressionType_LZW {
+					predictor = true
+				}
+			}
+		}
+
+		// Compressed data is written into a buffer first, so that we
+		// know the compressed size.
+		var buf bytes.Buffer
+		// dst holds the destination for the pixel data of the image --
+		// either w or a writer to buf.
+		var dst io.Writer
+		// imageLen is the length of the pixel data in bytes.
+		// The offset of the IFD is imageLen + 8 header bytes.
+		var imageLen int
+
+		switch compression {
+		case TagValue_CompressionType_None:
+			dst = w
+
+			switch m.(type) {
+			case *image.Paletted:
+				imageLen = d.X * d.Y * 1
+			case *image.Gray:
+				imageLen = d.X * d.Y * 1
+			case *image.Gray16:
+				imageLen = d.X * d.Y * 2
+			case *image.RGBA64:
+				imageLen = d.X * d.Y * 8
+			case *image.NRGBA64:
+				imageLen = d.X * d.Y * 8
+			default:
+				imageLen = d.X * d.Y * 4
+			}
+
+			currentOffset += imageLen
+		case TagValue_CompressionType_Deflate:
+			dst = zlib.NewWriter(&buf)
+		}
+
+		pr := uint32(TagValue_PredictorType_None)
+		photometricInterpretation := uint32(TagValue_PhotometricType_RGB)
+		samplesPerPixel := uint32(4)
+		bitsPerSample := []uint32{8, 8, 8, 8}
+		extraSamples := uint32(0)
+		colorMap := []uint32{}
+
+		if predictor {
+			pr = uint32(TagValue_PredictorType_Horizontal)
+		}
+		switch m := m.(type) {
+		case *image.Paletted:
+			photometricInterpretation = uint32(TagValue_PhotometricType_Paletted)
+			samplesPerPixel = 1
+			bitsPerSample = []uint32{8}
+			colorMap = make([]uint32, 256*3)
+			for i := 0; i < 256 && i < len(m.Palette); i++ {
+				r, g, b, _ := m.Palette[i].RGBA()
+				colorMap[i+0*256] = uint32(r)
+				colorMap[i+1*256] = uint32(g)
+				colorMap[i+2*256] = uint32(b)
+			}
+			err = encodeGray(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
+		case *image.Gray:
+			photometricInterpretation = uint32(TagValue_PhotometricType_BlackIsZero)
+			samplesPerPixel = 1
+			bitsPerSample = []uint32{8}
+			err = encodeGray(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
+		case *image.Gray16:
+			photometricInterpretation = uint32(TagValue_PhotometricType_BlackIsZero)
+			samplesPerPixel = 1
+			bitsPerSample = []uint32{16}
+			err = encodeGray16(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
+		case *image.NRGBA:
+			extraSamples = 2 // Unassociated alpha.
+			err = encodeRGBA(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
+		case *image.NRGBA64:
+			extraSamples = 2 // Unassociated alpha.
+			bitsPerSample = []uint32{16, 16, 16, 16}
+			err = encodeRGBA64(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
+		case *image.RGBA:
+			extraSamples = 1 // Associated alpha.
+			err = encodeRGBA(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
+		case *image.RGBA64:
+			extraSamples = 1 // Associated alpha.
+			bitsPerSample = []uint32{16, 16, 16, 16}
+			err = encodeRGBA64(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
+		default:
+			extraSamples = 1 // Associated alpha.
+			err = encode(dst, m, predictor)
+		}
+		if err != nil {
+			return err
+		}
+
+		if compression != TagValue_CompressionType_None {
+			if err = dst.(io.Closer).Close(); err != nil {
+				return err
+			}
+
+			// Write the compressed image to the writer.
+			_, err = buf.WriteTo(w)
+			if err != nil {
+				return err
+			}
+
+			// If compression is used, we only know the binary length after
+			// compression.
+			imageLen = buf.Len()
+			currentOffset += imageLen
+		}
+
+		ifd := []ifdEntry{
+			{TagType_ImageWidth, DataType_Short, []uint32{uint32(d.X)}},
+			{TagType_ImageLength, DataType_Short, []uint32{uint32(d.Y)}},
+			{TagType_BitsPerSample, DataType_Short, bitsPerSample},
+			{TagType_Compression, DataType_Short, []uint32{uint32(compression)}},
+			{TagType_PhotometricInterpretation, DataType_Short, []uint32{photometricInterpretation}},
+			{TagType_StripOffsets, DataType_Long, []uint32{uint32(currentOffset) - uint32(imageLen)}},
+			{TagType_SamplesPerPixel, DataType_Short, []uint32{samplesPerPixel}},
+			{TagType_RowsPerStrip, DataType_Short, []uint32{uint32(d.Y)}},
+			{TagType_StripByteCounts, DataType_Long, []uint32{uint32(imageLen)}},
+			// There is currently no support for storing the image
+			// resolution, so give a bogus value of 72x72 dpi.
+			{TagType_XResolution, DataType_Rational, []uint32{72, 1}},
+			{TagType_YResolution, DataType_Rational, []uint32{72, 1}},
+			{TagType_ResolutionUnit, DataType_Short, []uint32{uint32(TagValue_ResolutionUnitType_PerInch)}},
+		}
+		if pr != uint32(TagValue_PredictorType_None) {
+			ifd = append(ifd, ifdEntry{TagType_Predictor, DataType_Short, []uint32{pr}})
+		}
+		if len(colorMap) != 0 {
+			ifd = append(ifd, ifdEntry{TagType_ColorMap, DataType_Short, colorMap})
+		}
+		if extraSamples > 0 {
+			ifd = append(ifd, ifdEntry{TagType_ExtraSamples, DataType_Short, []uint32{extraSamples}})
+		}
+
+		outBuf := make([]byte, 4)
+		_, err = binary.Encode(outBuf, enc, uint32(currentOffset))
+		if err != nil {
+			return err
+		}
+
+		// Write offset at idfPlaceholderOffset
+		_, err = w.WriteAt(outBuf, int64(idfPlaceholderOffset))
+		if err != nil {
+			return err
+		}
+
+		idfPlaceholderOffset, currentOffset, err = writeIFD(w, currentOffset, ifd)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
 // Encode writes the image m to w. opt determines the options used for
 // encoding, such as the compression type. If opt is nil, an uncompressed
 // image is written.
-func Encode(w io.Writer, m image.Image, opt *Options) error {
-	d := m.Bounds().Size()
-
-	compression := TagValue_CompressionType_None
-	predictor := false
-
-	_, err := io.WriteString(w, ClassicTiffLittleEnding)
-	if err != nil {
-		return err
-	}
-
-	// Compressed data is written into a buffer first, so that we
-	// know the compressed size.
-	var buf bytes.Buffer
-	// dst holds the destination for the pixel data of the image --
-	// either w or a writer to buf.
-	var dst io.Writer
-	// imageLen is the length of the pixel data in bytes.
-	// The offset of the IFD is imageLen + 8 header bytes.
-	var imageLen int
-
-	switch compression {
-	case TagValue_CompressionType_None:
-		dst = w
-		// Write IFD offset before outputting pixel data.
-		switch m.(type) {
-		case *image.Paletted:
-			imageLen = d.X * d.Y * 1
-		case *image.Gray:
-			imageLen = d.X * d.Y * 1
-		case *image.Gray16:
-			imageLen = d.X * d.Y * 2
-		case *image.RGBA64:
-			imageLen = d.X * d.Y * 8
-		case *image.NRGBA64:
-			imageLen = d.X * d.Y * 8
-		default:
-			imageLen = d.X * d.Y * 4
-		}
-		err = binary.Write(w, enc, uint32(imageLen+8))
-		if err != nil {
-			return err
-		}
-	case TagValue_CompressionType_Deflate:
-		dst = zlib.NewWriter(&buf)
-	}
-
-	pr := uint32(TagValue_PredictorType_None)
-	photometricInterpretation := uint32(TagValue_PhotometricType_RGB)
-	samplesPerPixel := uint32(4)
-	bitsPerSample := []uint32{8, 8, 8, 8}
-	extraSamples := uint32(0)
-	colorMap := []uint32{}
-
-	if predictor {
-		pr = uint32(TagValue_PredictorType_Horizontal)
-	}
-	switch m := m.(type) {
-	case *image.Paletted:
-		photometricInterpretation = uint32(TagValue_PhotometricType_Paletted)
-		samplesPerPixel = 1
-		bitsPerSample = []uint32{8}
-		colorMap = make([]uint32, 256*3)
-		for i := 0; i < 256 && i < len(m.Palette); i++ {
-			r, g, b, _ := m.Palette[i].RGBA()
-			colorMap[i+0*256] = uint32(r)
-			colorMap[i+1*256] = uint32(g)
-			colorMap[i+2*256] = uint32(b)
-		}
-		err = encodeGray(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
-	case *image.Gray:
-		photometricInterpretation = uint32(TagValue_PhotometricType_BlackIsZero)
-		samplesPerPixel = 1
-		bitsPerSample = []uint32{8}
-		err = encodeGray(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
-	case *image.Gray16:
-		photometricInterpretation = uint32(TagValue_PhotometricType_BlackIsZero)
-		samplesPerPixel = 1
-		bitsPerSample = []uint32{16}
-		err = encodeGray16(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
-	case *image.NRGBA:
-		extraSamples = 2 // Unassociated alpha.
-		err = encodeRGBA(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
-	case *image.NRGBA64:
-		extraSamples = 2 // Unassociated alpha.
-		bitsPerSample = []uint32{16, 16, 16, 16}
-		err = encodeRGBA64(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
-	case *image.RGBA:
-		extraSamples = 1 // Associated alpha.
-		err = encodeRGBA(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
-	case *image.RGBA64:
-		extraSamples = 1 // Associated alpha.
-		bitsPerSample = []uint32{16, 16, 16, 16}
-		err = encodeRGBA64(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
-	default:
-		extraSamples = 1 // Associated alpha.
-		err = encode(dst, m, predictor)
-	}
-	if err != nil {
-		return err
-	}
-
-	if compression != TagValue_CompressionType_None {
-		if err = dst.(io.Closer).Close(); err != nil {
-			return err
-		}
-		imageLen = buf.Len()
-		if err = binary.Write(w, enc, uint32(imageLen+8)); err != nil {
-			return err
-		}
-		if _, err = buf.WriteTo(w); err != nil {
-			return err
-		}
-	}
-
-	ifd := []ifdEntry{
-		{TagType_ImageWidth, DataType_Short, []uint32{uint32(d.X)}},
-		{TagType_ImageLength, DataType_Short, []uint32{uint32(d.Y)}},
-		{TagType_BitsPerSample, DataType_Short, bitsPerSample},
-		{TagType_Compression, DataType_Short, []uint32{uint32(compression)}},
-		{TagType_PhotometricInterpretation, DataType_Short, []uint32{photometricInterpretation}},
-		{TagType_StripOffsets, DataType_Long, []uint32{8}},
-		{TagType_SamplesPerPixel, DataType_Short, []uint32{samplesPerPixel}},
-		{TagType_RowsPerStrip, DataType_Short, []uint32{uint32(d.Y)}},
-		{TagType_StripByteCounts, DataType_Long, []uint32{uint32(imageLen)}},
-		// There is currently no support for storing the image
-		// resolution, so give a bogus value of 72x72 dpi.
-		{TagType_XResolution, DataType_Rational, []uint32{72, 1}},
-		{TagType_YResolution, DataType_Rational, []uint32{72, 1}},
-		{TagType_ResolutionUnit, DataType_Short, []uint32{uint32(TagValue_ResolutionUnitType_PerInch)}},
-	}
-	if pr != uint32(TagValue_PredictorType_None) {
-		ifd = append(ifd, ifdEntry{TagType_Predictor, DataType_Short, []uint32{pr}})
-	}
-	if len(colorMap) != 0 {
-		ifd = append(ifd, ifdEntry{TagType_ColorMap, DataType_Short, colorMap})
-	}
-	if extraSamples > 0 {
-		ifd = append(ifd, ifdEntry{TagType_ExtraSamples, DataType_Short, []uint32{extraSamples}})
-	}
-
-	return writeIFD(w, imageLen+8, ifd)
+func Encode(w EncoderWriter, m image.Image, opt *Options) error {
+	return EncodeAll(w, [][]image.Image{{m}}, [][]*Options{{opt}})
 }
