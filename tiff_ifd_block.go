@@ -141,7 +141,7 @@ func (p *IFD) DecodeBlock(r io.ReadSeeker, col, row int, dst image.Image) (err e
 	limitReader := io.LimitReader(r, count)
 
 	var data []byte
-	if data, err = p.Compression().Decode(limitReader, bounds.Dx(), bounds.Dy()); err != nil {
+	if data, err = p.Compression().Decode(limitReader, bounds.Dx(), bounds.Dy(), p); err != nil {
 		return
 	}
 

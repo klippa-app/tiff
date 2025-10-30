@@ -441,6 +441,7 @@ type TagGetter interface {
 	GetJPEGRestartInterval() (value int64, ok bool)
 	GetJPEGLosslessPredictors() (value []int64, ok bool)
 	GetJPEGPointTransforms() (value []int64, ok bool)
+	GetJPEGTables() (value []byte, ok bool)
 	GetJPEGQTables() (value []int64, ok bool)
 	GetJPEGDCTables() (value []int64, ok bool)
 	GetJPEGACTables() (value []int64, ok bool)

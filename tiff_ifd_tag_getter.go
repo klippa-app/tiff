@@ -797,6 +797,15 @@ func (p *tifTagGetter) GetJPEGPointTransforms() (value []int64, ok bool) {
 	return
 }
 
+func (p *tifTagGetter) GetJPEGTables() (value []byte, ok bool) {
+	var entry *IFDEntry
+	if entry, ok = p.EntryMap[TagType_JPEGTables]; !ok {
+		return
+	}
+	_, value = entry.Bytes()
+	return
+}
+
 func (p *tifTagGetter) GetJPEGQTables() (value []int64, ok bool) {
 	var entry *IFDEntry
 	if entry, ok = p.EntryMap[TagType_JPEGQTables]; !ok {
