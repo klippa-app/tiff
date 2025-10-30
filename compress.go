@@ -18,7 +18,7 @@ import (
 	"github.com/chai2010/tiff/internal/fax"
 )
 
-func (p TagValue_CompressionType) Decode(r io.Reader, width, height int, ifd *IFD) (data []byte, err error) {
+func (p TagValue_CompressionType) Decode(r io.Reader, width, height int, ifd *IFD) (data []byte, img image.Image, err error) {
 	switch p {
 	case TagValue_CompressionType_None, TagValue_CompressionType_Nil:
 		return p.decode_None(r)
@@ -45,21 +45,21 @@ func (p TagValue_CompressionType) Decode(r io.Reader, width, height int, ifd *IF
 	return
 }
 
-func (p TagValue_CompressionType) decode_None(r io.Reader) (data []byte, err error) {
+func (p TagValue_CompressionType) decode_None(r io.Reader) (data []byte, img image.Image, err error) {
 	data, err = ioutil.ReadAll(r)
 	return
 }
 
-func (p TagValue_CompressionType) decode_CCITT(r io.Reader) (data []byte, err error) {
+func (p TagValue_CompressionType) decode_CCITT(r io.Reader) (data []byte, img image.Image, err error) {
 	err = fmt.Errorf("tiff: unsupport %v compression type", "CCITT")
 	return
 }
 
-func (p TagValue_CompressionType) decode_G3(r io.Reader, width, height int) (data []byte, err error) {
+func (p TagValue_CompressionType) decode_G3(r io.Reader, width, height int) (data []byte, img image.Image, err error) {
 	return p.decode_G4(r, width, height)
 }
 
-func (p TagValue_CompressionType) decode_G4(r io.Reader, width, height int) (data []byte, err error) {
+func (p TagValue_CompressionType) decode_G4(r io.Reader, width, height int) (data []byte, img image.Image, err error) {
 	br, ok := r.(io.ByteReader)
 	if !ok {
 		br = bufio.NewReader(r)
@@ -68,20 +68,20 @@ func (p TagValue_CompressionType) decode_G4(r io.Reader, width, height int) (dat
 	return fax.DecodeG4Pixels(br, width, height)
 }
 
-func (p TagValue_CompressionType) decode_LZW(r io.Reader) (data []byte, err error) {
+func (p TagValue_CompressionType) decode_LZW(r io.Reader) (data []byte, img image.Image, err error) {
 	lzwReader := newLzwReader(r, lzwMSB, 8)
 	data, err = ioutil.ReadAll(lzwReader)
 	lzwReader.Close()
 	return
 }
 
-func (p TagValue_CompressionType) decode_JPEGOld(r io.Reader) (data []byte, err error) {
+func (p TagValue_CompressionType) decode_JPEGOld(r io.Reader) (data []byte, img image.Image, err error) {
 	println("decode_JPEGOld")
 	err = fmt.Errorf("tiff: unsupport %v compression type", "JPEGOld")
 	return
 }
 
-func (p TagValue_CompressionType) decode_JPEG(r io.Reader, ifd *IFD) (data []byte, err error) {
+func (p TagValue_CompressionType) decode_JPEG(r io.Reader, ifd *IFD) (data []byte, img image.Image, err error) {
 	var decodedImage image.Image
 	var imageReader io.Reader
 
@@ -139,55 +139,30 @@ func (p TagValue_CompressionType) decode_JPEG(r io.Reader, ifd *IFD) (data []byt
 		return
 	}
 
-	// Just return the pixel data.
-	switch m := decodedImage.(type) {
-	case *image.Paletted:
-		return m.Pix, nil
-	case *image.Gray:
-		return m.Pix, nil
-	case *image.Gray16:
-		return m.Pix, nil
-	case *image.NRGBA:
-		return m.Pix, nil
-	case *image.NRGBA64:
-		return m.Pix, nil
-	case *image.RGBA64:
-		return m.Pix, nil
-	case *image.RGBA:
-		return m.Pix, nil
-	case *image.Alpha:
-		return m.Pix, nil
-	case *image.Alpha16:
-		return m.Pix, nil
-	default:
-		err = fmt.Errorf("tiff: unknown decoded image type: %T", decodedImage)
-		return
-	}
-
-	return
+	return nil, decodedImage, nil
 }
 
-func (p TagValue_CompressionType) decode_Deflate(r io.Reader) (data []byte, err error) {
+func (p TagValue_CompressionType) decode_Deflate(r io.Reader) (data []byte, img image.Image, err error) {
 	zlibReader, err := zlib.NewReader(r)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	data, err = ioutil.ReadAll(zlibReader)
 	zlibReader.Close()
 	return
 }
 
-func (p TagValue_CompressionType) decode_DeflateOld(r io.Reader) (data []byte, err error) {
+func (p TagValue_CompressionType) decode_DeflateOld(r io.Reader) (data []byte, img image.Image, err error) {
 	zlibReader, err := zlib.NewReader(r)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	data, err = ioutil.ReadAll(zlibReader)
 	zlibReader.Close()
 	return
 }
 
-func (p TagValue_CompressionType) decode_PackBits(r io.Reader) (data []byte, err error) {
+func (p TagValue_CompressionType) decode_PackBits(r io.Reader) (data []byte, img image.Image, err error) {
 	type byteReader interface {
 		io.Reader
 		io.ByteReader
@@ -204,23 +179,23 @@ func (p TagValue_CompressionType) decode_PackBits(r io.Reader) (data []byte, err
 		b, err := br.ReadByte()
 		if err != nil {
 			if err == io.EOF {
-				return dst, nil
+				return dst, nil, nil
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		code := int(int8(b))
 		switch {
 		case code >= 0:
 			n, err := io.ReadFull(br, buf[:code+1])
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			dst = append(dst, buf[:n]...)
 		case code == -128:
 			// No-op.
 		default:
 			if b, err = br.ReadByte(); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for j := 0; j < 1-code; j++ {
 				buf[j] = b

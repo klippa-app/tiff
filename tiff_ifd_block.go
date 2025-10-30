@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"io"
 )
 
@@ -141,7 +142,18 @@ func (p *IFD) DecodeBlock(r io.ReadSeeker, col, row int, dst image.Image) (err e
 	limitReader := io.LimitReader(r, count)
 
 	var data []byte
-	if data, err = p.Compression().Decode(limitReader, bounds.Dx(), bounds.Dy(), p); err != nil {
+	var img image.Image
+	if data, img, err = p.Compression().Decode(limitReader, bounds.Dx(), bounds.Dy(), p); err != nil {
+		return
+	}
+
+	// If an image is provided by decompression, copy its content onto the dst image.
+	if img != nil {
+		drawImage, ok := dst.(draw.Image)
+		if ok {
+			tileSize := img.Bounds().Size()
+			draw.Draw(drawImage, image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Min.X+tileSize.X, bounds.Min.Y+tileSize.Y), img, img.Bounds().Min, draw.Src)
+		}
 		return
 	}
 
@@ -245,6 +257,7 @@ func (p *IFD) decodeBlock(buf []byte, dst image.Image, r image.Rectangle) (err e
 			bpp := uint(p.Depth())
 			bitReader := newBitsReader(buf)
 			img := dst.(*image.Gray)
+
 			max := uint32((1 << uint(p.Depth())) - 1)
 			for y := ymin; y < rMaxY; y++ {
 				for x := xmin; x < rMaxX; x++ {

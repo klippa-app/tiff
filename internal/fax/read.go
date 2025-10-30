@@ -53,12 +53,12 @@ func DecodeG4(reader io.ByteReader, width, height int) (image.Image, error) {
 	return d.parse()
 }
 
-func DecodeG4Pixels(reader io.ByteReader, width, height int) ([]byte, error) {
+func DecodeG4Pixels(reader io.ByteReader, width, height int) ([]byte, image.Image, error) {
 	if width < 0 {
-		return nil, negativeWidth
+		return nil, nil, negativeWidth
 	}
 	if width == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if height <= 0 {
 		height = width
@@ -80,7 +80,7 @@ func DecodeG4Pixels(reader io.ByteReader, width, height int) ([]byte, error) {
 
 	// initiate d.head
 	if err := d.pop(0); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	return d.parsePixels()
@@ -155,7 +155,7 @@ func (d *decoder) parse() (result image.Image, err error) {
 	return
 }
 
-func (d *decoder) parsePixels() (data []byte, err error) {
+func (d *decoder) parsePixels() (data []byte, img image.Image, err error) {
 	// parse until end-of-facsimile block: 0x001001
 	for d.head&0xFE000000 != 0 && err == nil {
 		i := (d.head >> 28) & 0xF
