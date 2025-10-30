@@ -100,7 +100,7 @@ func (p TagValue_CompressionType) decode_JPEG(r io.Reader, ifd *IFD) (data []byt
 
 		newImage := bytes.NewBuffer(nil)
 
-		// First verify some stuff before verifying.
+		// First verify some stuff before merging.
 		if jpegTables[0] != 0xff || jpegTables[1] != 0xd8 {
 			err = errors.New("tiff: invalid jpeg table, does not begin with SOI marker")
 			return
