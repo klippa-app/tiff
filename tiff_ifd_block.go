@@ -150,10 +150,13 @@ func (p *IFD) DecodeBlock(r io.ReadSeeker, col, row int, dst image.Image) (err e
 	// If an image is provided by decompression, copy its content onto the dst image.
 	if img != nil {
 		drawImage, ok := dst.(draw.Image)
-		if ok {
-			tileSize := img.Bounds().Size()
-			draw.Draw(drawImage, image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Min.X+tileSize.X, bounds.Min.Y+tileSize.Y), img, img.Bounds().Min, draw.Src)
+		if !ok {
+			err = fmt.Errorf("tiff: IFD.DecodeBlock: destination image can not be drawn onto")
+			return
 		}
+
+		tileSize := img.Bounds().Size()
+		draw.Draw(drawImage, image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Min.X+tileSize.X, bounds.Min.Y+tileSize.Y), img, img.Bounds().Min, draw.Src)
 		return
 	}
 

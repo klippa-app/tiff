@@ -39,6 +39,8 @@ const (
 	ImageType_RGB
 	ImageType_RGBA
 	ImageType_NRGBA
+	ImageType_CMYK
+	ImageType_YCbCr
 )
 
 type DataType uint16

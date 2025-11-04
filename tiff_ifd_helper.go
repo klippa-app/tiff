@@ -156,9 +156,9 @@ func (p *IFD) ImageType() ImageType {
 	case TagValue_PhotometricType_TransMask:
 		return ImageType_Nil
 	case TagValue_PhotometricType_CMYK:
-		return ImageType_Nil
+		return ImageType_CMYK
 	case TagValue_PhotometricType_YCbCr:
-		return ImageType_Nil
+		return ImageType_YCbCr
 	case TagValue_PhotometricType_CIELab:
 		return ImageType_Nil
 	}
@@ -242,6 +242,10 @@ func (p *IFD) ImageConfig() (config image.Config, err error) {
 		} else {
 			config.ColorModel = color.GrayModel
 		}
+	case TagValue_PhotometricType_YCbCr:
+		config.ColorModel = color.YCbCrModel
+	case TagValue_PhotometricType_CMYK:
+		config.ColorModel = color.CMYKModel
 	default:
 		err = fmt.Errorf("tiff: decoder.Decode, unsupport color model")
 		return
