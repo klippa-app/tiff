@@ -50,6 +50,10 @@ func newImageWithIFD(r image.Rectangle, ifd *IFD) (m image.Image, err error) {
 			return nil, fmt.Errorf("YCbCrSubSampling not found in tags")
 		}
 
+		if len(subsampleRatio) != 2 {
+			return nil, fmt.Errorf("YCbCrSubSampling subsampling length must be 2")
+		}
+
 		var ratio image.YCbCrSubsampleRatio
 		if subsampleRatio[0] == 4 && subsampleRatio[1] == 4 {
 			ratio = image.YCbCrSubsampleRatio444
