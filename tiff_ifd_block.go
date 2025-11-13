@@ -232,7 +232,14 @@ func (p *IFD) decodeBlock(buf []byte, dst image.Image, r image.Rectangle) (err e
 				max := img.PixOffset(rMaxX, y)
 				off := (y - ymin) * (xmax - xmin) * 1
 				for i := min; i < max; i++ {
-					img.Pix[i+0] = buf[off+0]
+
+					// Inverse pixel data when bilevel.
+					if p.ImageType() == ImageType_Bilevel {
+						img.Pix[i+0] = 0xff - buf[off+0]
+					} else {
+						img.Pix[i+0] = buf[off+0]
+					}
+
 					off++
 				}
 			}
